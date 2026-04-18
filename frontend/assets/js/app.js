@@ -410,6 +410,50 @@
     return payload;
   }
 
+
+  async function fetchStaticJson(url) {
+    const response = await fetch(url);
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch (_error) {
+        throw new Error(`Invalid JSON response from ${url}`);
+      }
+    }
+    if (!response.ok) {
+      throw new Error(payload && payload.error ? payload.error : `Request failed (${response.status})`);
+    }
+    return payload;
+  }
+
+  async function hydrateDashboardGeo(data) {
+    const tasks = [];
+
+    if ((!data.geo || !Array.isArray(data.geo.features) || data.geo.features.length === 0) && data.geoUrl) {
+      tasks.push(
+        fetchStaticJson(data.geoUrl).then((payload) => {
+          data.geo = payload;
+        })
+      );
+    }
+
+    if (
+      (!data.provinceView.geo || !Array.isArray(data.provinceView.geo.features) || data.provinceView.geo.features.length === 0) &&
+      data.provinceView.geoUrl
+    ) {
+      tasks.push(
+        fetchStaticJson(data.provinceView.geoUrl).then((payload) => {
+          data.provinceView.geo = payload;
+        })
+      );
+    }
+
+    await Promise.all(tasks);
+    return data;
+  }
+
   function normalizeDashboardData(payload) {
     if (!payload || typeof payload !== "object") {
       throw new Error("Bootstrap payload tidak valid.");
@@ -426,10 +470,12 @@
       },
       legend: payload.legend || { zeroColor: "#243155", ranges: [] },
       geo: payload.geo || { type: "FeatureCollection", features: [] },
+      geoUrl: payload.geoUrl || "",
       regions: Array.isArray(payload.regions) ? payload.regions : [],
       provinceView: {
         legend: (payload.provinceView && payload.provinceView.legend) || { zeroColor: "#243155", ranges: [] },
         geo: (payload.provinceView && payload.provinceView.geo) || { type: "FeatureCollection", features: [] },
+        geoUrl: (payload.provinceView && payload.provinceView.geoUrl) || "",
         provinces:
           payload.provinceView && Array.isArray(payload.provinceView.provinces) ? payload.provinceView.provinces : [],
       },
@@ -1374,7 +1420,7 @@
     renderBootstrapLoading();
 
     try {
-      dashboardData = normalizeDashboardData(await fetchJson("/bootstrap"));
+      dashboardData = await hydrateDashboardGeo(normalizeDashboardData(await fetchJson("/bootstrap")));
       regionsByKey = new Map(dashboardData.regions.map((region) => [region.regionKey, region]));
       provincesByKey = new Map(dashboardData.provinceView.provinces.map((province) => [province.provinceKey, province]));
       renderKpis();

@@ -66,7 +66,26 @@ python3 -m http.server 8080
 Then open `http://127.0.0.1:8080` in your browser.
 
 The frontend is preconfigured to call the backend at `http://127.0.0.1:3000/api` in local development.
-For same-origin deployments behind CloudFront or a reverse proxy, `frontend/assets/js/runtime-config.js` defaults to `/api`.
+For same-origin deployments behind Cloudflare or another reverse proxy, `frontend/assets/js/runtime-config.js` defaults to `/api`.
+
+## Cloudflare deployment
+
+This repo now includes a Worker + D1 deployment path:
+
+- `wrangler.toml` serves `frontend/` as static assets
+- `worker/src/index.mjs` serves `/api/*` from D1
+- large geojson blobs are served as static files from `frontend/assets/data/`
+- `docs/cloudflare-d1-migration.md` explains why those blobs should stay out of D1
+- `scripts/make-d1-import.py` creates a D1-friendly SQL import by removing oversized `assets` rows
+
+Typical flow:
+
+```bash
+python3 scripts/make-d1-import.py --in /path/to/dashboard.sql --out /path/to/d1-import.sql
+wrangler d1 create nemesis-id
+wrangler d1 execute nemesis-id --file /path/to/d1-import.sql
+wrangler deploy
+```
 
 ## Notes
 

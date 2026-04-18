@@ -1,0 +1,12 @@
+name = "nemesis-id"
+main = "worker/src/index.mjs"
+compatibility_date = "2026-04-18"
+
+[assets]
+directory = "./frontend"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nemesis-id"
+database_id = "00000000-0000-0000-0000-000000000000"
