@@ -1,7 +1,14 @@
 const express = require("express");
 const cors = require("cors");
-const { CORS_ORIGIN } = require("./config");
+const { BOOTSTRAP_CACHE_TTL_MS, CORS_ORIGIN, SCOPED_PACKAGES_CACHE_TTL_MS } = require("./config");
 const { getBootstrapPayload, getOwnerPackages, getRegionPackages, getProvincePackages } = require("./dashboard-repository");
+const { createResponseCache } = require("./response-cache");
+const { writeJsonResponse } = require("./http-cache");
+
+const bootstrapCache = createResponseCache(BOOTSTRAP_CACHE_TTL_MS);
+const scopedPackagesCache = createResponseCache(SCOPED_PACKAGES_CACHE_TTL_MS);
+const BOOTSTRAP_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=3600";
+const SCOPED_PACKAGES_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300";
 
 function resolveCorsOrigin() {
   if (CORS_ORIGIN === "*") {
@@ -27,11 +34,28 @@ function createApp(db) {
     res.json({ status: "ok" });
   });
 
-  app.get("/api/bootstrap", (_req, res) => {
-    res.json(getBootstrapPayload(db));
+  app.get("/api/bootstrap", (req, res) => {
+    const cacheKey = req.originalUrl;
+    const cached = bootstrapCache.get(cacheKey);
+
+    if (cached) {
+      writeJsonResponse(req, res, cached, BOOTSTRAP_CACHE_CONTROL);
+      return;
+    }
+
+    const entry = bootstrapCache.set(cacheKey, getBootstrapPayload(db));
+    writeJsonResponse(req, res, entry, BOOTSTRAP_CACHE_CONTROL);
   });
 
   app.get("/api/regions/:regionKey/packages", (req, res) => {
+    const cacheKey = req.originalUrl;
+    const cached = scopedPackagesCache.get(cacheKey);
+
+    if (cached) {
+      writeJsonResponse(req, res, cached, SCOPED_PACKAGES_CACHE_CONTROL);
+      return;
+    }
+
     const payload = getRegionPackages(db, req.params.regionKey, req.query);
 
     if (!payload) {
@@ -39,10 +63,19 @@ function createApp(db) {
       return;
     }
 
-    res.json(payload);
+    const entry = scopedPackagesCache.set(cacheKey, payload);
+    writeJsonResponse(req, res, entry, SCOPED_PACKAGES_CACHE_CONTROL);
   });
 
   app.get("/api/provinces/:provinceKey/packages", (req, res) => {
+    const cacheKey = req.originalUrl;
+    const cached = scopedPackagesCache.get(cacheKey);
+
+    if (cached) {
+      writeJsonResponse(req, res, cached, SCOPED_PACKAGES_CACHE_CONTROL);
+      return;
+    }
+
     const payload = getProvincePackages(db, req.params.provinceKey, req.query);
 
     if (!payload) {
@@ -50,7 +83,8 @@ function createApp(db) {
       return;
     }
 
-    res.json(payload);
+    const entry = scopedPackagesCache.set(cacheKey, payload);
+    writeJsonResponse(req, res, entry, SCOPED_PACKAGES_CACHE_CONTROL);
   });
 
   app.get("/api/owners/packages", (req, res) => {
@@ -62,6 +96,14 @@ function createApp(db) {
       return;
     }
 
+    const cacheKey = req.originalUrl;
+    const cached = scopedPackagesCache.get(cacheKey);
+
+    if (cached) {
+      writeJsonResponse(req, res, cached, SCOPED_PACKAGES_CACHE_CONTROL);
+      return;
+    }
+
     const payload = getOwnerPackages(db, req.query);
 
     if (!payload) {
@@ -69,7 +111,8 @@ function createApp(db) {
       return;
     }
 
-    res.json(payload);
+    const entry = scopedPackagesCache.set(cacheKey, payload);
+    writeJsonResponse(req, res, entry, SCOPED_PACKAGES_CACHE_CONTROL);
   });
 
   app.use((err, _req, res, _next) => {

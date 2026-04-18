@@ -65,7 +65,8 @@ python3 -m http.server 8080
 
 Then open `http://127.0.0.1:8080` in your browser.
 
-The frontend is preconfigured to call the backend at `http://127.0.0.1:3000/api`.
+The frontend is preconfigured to call the backend at `http://127.0.0.1:3000/api` in local development.
+For same-origin deployments behind CloudFront or a reverse proxy, `frontend/assets/js/runtime-config.js` defaults to `/api`.
 
 ## Notes
 

@@ -74,6 +74,10 @@ if (ensureOwnerMetricsCompatibility(db)) {
 }
 
 db.exec("CREATE INDEX IF NOT EXISTS idx_packages_owner_lookup ON packages(owner_type, owner_name);");
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_owner_metrics_type_rank
+  ON owner_metrics(owner_type, total_potential_waste DESC, total_priority_packages DESC, total_packages DESC, owner_name)
+`);
 
 const app = createApp(db);
 const server = app.listen(PORT, () => {

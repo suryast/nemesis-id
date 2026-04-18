@@ -19,6 +19,16 @@ if (!Number.isInteger(port) || port <= 0) {
 const DATA_DIR = resolveFromRoot(process.env.DATA_DIR, "data");
 const DATASET_DIR = resolveFromRoot(process.env.AUDIT_DATASET_DIR, "dataset");
 const GEO_ROOT_PATH = resolveFromRoot(process.env.GEO_ROOT_PATH, path.join("seed", "geo"));
+const bootstrapCacheTtlMs = Number(process.env.BOOTSTRAP_CACHE_TTL_MS || 5 * 60 * 1000);
+const scopedPackagesCacheTtlMs = Number(process.env.SCOPED_PACKAGES_CACHE_TTL_MS || 60 * 1000);
+
+if (!Number.isFinite(bootstrapCacheTtlMs) || bootstrapCacheTtlMs < 0) {
+  throw new Error("BOOTSTRAP_CACHE_TTL_MS must be zero or a positive number.");
+}
+
+if (!Number.isFinite(scopedPackagesCacheTtlMs) || scopedPackagesCacheTtlMs < 0) {
+  throw new Error("SCOPED_PACKAGES_CACHE_TTL_MS must be zero or a positive number.");
+}
 
 module.exports = {
   ROOT_DIR,
@@ -37,4 +47,6 @@ module.exports = {
   AUDIT_DATASET_YEAR: String(process.env.AUDIT_DATASET_YEAR || "2026").trim(),
   DEFAULT_REGION_PAGE_SIZE: 25,
   MAX_REGION_PAGE_SIZE: 100,
+  BOOTSTRAP_CACHE_TTL_MS: bootstrapCacheTtlMs,
+  SCOPED_PACKAGES_CACHE_TTL_MS: scopedPackagesCacheTtlMs,
 };
