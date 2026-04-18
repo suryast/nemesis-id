@@ -21,6 +21,7 @@ const DATASET_DIR = resolveFromRoot(process.env.AUDIT_DATASET_DIR, "dataset");
 const GEO_ROOT_PATH = resolveFromRoot(process.env.GEO_ROOT_PATH, path.join("seed", "geo"));
 const bootstrapCacheTtlMs = Number(process.env.BOOTSTRAP_CACHE_TTL_MS || 5 * 60 * 1000);
 const scopedPackagesCacheTtlMs = Number(process.env.SCOPED_PACKAGES_CACHE_TTL_MS || 60 * 1000);
+const maxScopedResultWindow = Number(process.env.MAX_SCOPED_RESULT_WINDOW || 5000);
 
 if (!Number.isFinite(bootstrapCacheTtlMs) || bootstrapCacheTtlMs < 0) {
   throw new Error("BOOTSTRAP_CACHE_TTL_MS must be zero or a positive number.");
@@ -28,6 +29,10 @@ if (!Number.isFinite(bootstrapCacheTtlMs) || bootstrapCacheTtlMs < 0) {
 
 if (!Number.isFinite(scopedPackagesCacheTtlMs) || scopedPackagesCacheTtlMs < 0) {
   throw new Error("SCOPED_PACKAGES_CACHE_TTL_MS must be zero or a positive number.");
+}
+
+if (!Number.isFinite(maxScopedResultWindow) || maxScopedResultWindow < 1) {
+  throw new Error("MAX_SCOPED_RESULT_WINDOW must be a positive number.");
 }
 
 module.exports = {
@@ -49,4 +54,5 @@ module.exports = {
   MAX_REGION_PAGE_SIZE: 100,
   BOOTSTRAP_CACHE_TTL_MS: bootstrapCacheTtlMs,
   SCOPED_PACKAGES_CACHE_TTL_MS: scopedPackagesCacheTtlMs,
+  MAX_SCOPED_RESULT_WINDOW: Math.floor(maxScopedResultWindow),
 };

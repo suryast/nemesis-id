@@ -1,4 +1,4 @@
-const { DEFAULT_REGION_PAGE_SIZE, MAX_REGION_PAGE_SIZE } = require("./config");
+const { DEFAULT_REGION_PAGE_SIZE, MAX_REGION_PAGE_SIZE, MAX_SCOPED_RESULT_WINDOW } = require("./config");
 
 const LEGEND_COLORS = ["#7b86a3", "#b5a882", "#d4a999", "#8b7332", "#a83c2e"];
 const VALID_OWNER_TYPES = ["kabkota", "provinsi", "central", "other"];
@@ -360,14 +360,67 @@ function getOwnerRows(db, ownerType) {
 }
 
 function normalizeScopedPackageQuery(requestQuery, options = {}) {
+  const page = clampInteger(requestQuery.page, 1, 1, Number.MAX_SAFE_INTEGER);
+  const pageSize = clampInteger(requestQuery.pageSize, DEFAULT_REGION_PAGE_SIZE, 1, MAX_REGION_PAGE_SIZE);
+  const offset = (page - 1) * pageSize;
+
+  if (offset >= MAX_SCOPED_RESULT_WINDOW) {
+    const error = new Error(`Requested page exceeds max result window of ${MAX_SCOPED_RESULT_WINDOW} rows.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
   return {
-    page: clampInteger(requestQuery.page, 1, 1, Number.MAX_SAFE_INTEGER),
-    pageSize: clampInteger(requestQuery.pageSize, DEFAULT_REGION_PAGE_SIZE, 1, MAX_REGION_PAGE_SIZE),
+    page,
+    pageSize,
+    offset,
     search: (requestQuery.search || "").trim(),
     ownerType: options.allowOwnerType === false ? "" : (requestQuery.ownerType || "").trim(),
     severity: options.allowSeverity === false ? "" : (requestQuery.severity || "").trim(),
     priorityOnly: parseBooleanQuery(requestQuery.priorityOnly),
   };
+}
+
+function resolveRegionTotalItems(row, query) {
+  if (query.search || query.severity) {
+    return null;
+  }
+
+  if (VALID_OWNER_TYPES.includes(query.ownerType)) {
+    const packageFieldByOwnerType = {
+      central: "central_packages",
+      provinsi: "provincial_packages",
+      kabkota: "local_packages",
+      other: "other_packages",
+    };
+    const priorityFieldByOwnerType = {
+      central: "central_priority_packages",
+      provinsi: "provincial_priority_packages",
+      kabkota: "local_priority_packages",
+      other: "other_priority_packages",
+    };
+    const fieldName = query.priorityOnly ? priorityFieldByOwnerType[query.ownerType] : packageFieldByOwnerType[query.ownerType];
+
+    return row[fieldName] || 0;
+  }
+
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0;
+}
+
+function resolveProvinceTotalItems(row, query) {
+  if (query.search || query.severity) {
+    return null;
+  }
+
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0;
+}
+
+function resolveOwnerTotalItems(row, query) {
+  if (query.search || query.severity) {
+    return null;
+  }
+
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0;
 }
 
 function buildPackagesWhereClause(scopeColumn, scopeKey, query, options = {}) {
@@ -468,15 +521,16 @@ function mapPackageRow(row) {
 
 function queryPackagesPage(db, scopeTable, scopeColumn, scopeKey, normalizedQuery, options = {}) {
   const whereClause = buildPackagesWhereClause(scopeColumn, scopeKey, normalizedQuery, options);
-  const countRow = db
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM ${scopeTable}
-      INNER JOIN packages ON packages.id = ${scopeTable}.package_id
-      WHERE ${whereClause.sql}
-    `)
-    .get(...whereClause.params);
-  const totalItems = countRow.total || 0;
+  const totalItems = Number.isInteger(options.precomputedTotalItems)
+    ? options.precomputedTotalItems
+    : db
+        .prepare(`
+          SELECT COUNT(*) AS total
+          FROM ${scopeTable}
+          INNER JOIN packages ON packages.id = ${scopeTable}.package_id
+          WHERE ${whereClause.sql}
+        `)
+        .get(...whereClause.params).total || 0;
   const totalPages = totalItems ? Math.ceil(totalItems / normalizedQuery.pageSize) : 1;
   const page = Math.min(normalizedQuery.page, totalPages);
   const offset = (page - 1) * normalizedQuery.pageSize;
@@ -529,16 +583,17 @@ function queryPackagesPage(db, scopeTable, scopeColumn, scopeKey, normalizedQuer
   };
 }
 
-function queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery) {
+function queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery, options = {}) {
   const whereClause = buildOwnerPackagesWhereClause(ownerType, ownerName, normalizedQuery);
-  const countRow = db
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM packages
-      WHERE ${whereClause.sql}
-    `)
-    .get(...whereClause.params);
-  const totalItems = countRow.total || 0;
+  const totalItems = Number.isInteger(options.precomputedTotalItems)
+    ? options.precomputedTotalItems
+    : db
+        .prepare(`
+          SELECT COUNT(*) AS total
+          FROM packages
+          WHERE ${whereClause.sql}
+        `)
+        .get(...whereClause.params).total || 0;
   const totalPages = totalItems ? Math.ceil(totalItems / normalizedQuery.pageSize) : 1;
   const page = Math.min(normalizedQuery.page, totalPages);
   const offset = (page - 1) * normalizedQuery.pageSize;
@@ -666,7 +721,9 @@ function getRegionPackages(db, regionKey, requestQuery) {
   }
 
   const normalizedQuery = normalizeScopedPackageQuery(requestQuery);
-  const pageResult = queryPackagesPage(db, "package_regions", "package_regions.region_key", regionKey, normalizedQuery);
+  const pageResult = queryPackagesPage(db, "package_regions", "package_regions.region_key", regionKey, normalizedQuery, {
+    precomputedTotalItems: resolveRegionTotalItems(regionRow, normalizedQuery),
+  });
 
   return {
     region: mapRegionRow(regionRow),
@@ -729,6 +786,7 @@ function getProvincePackages(db, provinceKey, requestQuery) {
     normalizedQuery,
     {
       forcedOwnerType: "provinsi",
+      precomputedTotalItems: resolveProvinceTotalItems(provinceRow, normalizedQuery),
     }
   );
 
@@ -787,7 +845,9 @@ function getOwnerPackages(db, requestQuery) {
   const normalizedQuery = normalizeScopedPackageQuery(requestQuery, {
     allowOwnerType: false,
   });
-  const pageResult = queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery);
+  const pageResult = queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery, {
+    precomputedTotalItems: resolveOwnerTotalItems(ownerRow, normalizedQuery),
+  });
 
   return {
     owner: mapOwnerRow(ownerRow),

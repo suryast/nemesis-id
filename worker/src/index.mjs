@@ -3,6 +3,7 @@ const VALID_SEVERITIES = new Set(["low", "med", "high", "absurd"])
 const LEGEND_COLORS = ["#7b86a3", "#b5a882", "#d4a999", "#8b7332", "#a83c2e"]
 const DEFAULT_REGION_PAGE_SIZE = 25
 const MAX_REGION_PAGE_SIZE = 100
+const MAX_SCOPED_RESULT_WINDOW = 5000
 const BOOTSTRAP_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=3600"
 const SCOPED_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300"
 
@@ -226,14 +227,58 @@ function buildLegend(values) {
 }
 
 function normalizeScopedPackageQuery(url, options = {}) {
+  const page = clampInteger(url.searchParams.get("page"), 1, 1, Number.MAX_SAFE_INTEGER)
+  const pageSize = clampInteger(url.searchParams.get("pageSize"), DEFAULT_REGION_PAGE_SIZE, 1, MAX_REGION_PAGE_SIZE)
+  const offset = (page - 1) * pageSize
+
+  if (offset >= MAX_SCOPED_RESULT_WINDOW) {
+    const error = new Error(`Requested page exceeds max result window of ${MAX_SCOPED_RESULT_WINDOW} rows.`)
+    error.statusCode = 400
+    throw error
+  }
+
   return {
-    page: clampInteger(url.searchParams.get("page"), 1, 1, Number.MAX_SAFE_INTEGER),
-    pageSize: clampInteger(url.searchParams.get("pageSize"), DEFAULT_REGION_PAGE_SIZE, 1, MAX_REGION_PAGE_SIZE),
+    page,
+    pageSize,
+    offset,
     search: (url.searchParams.get("search") || "").trim(),
     ownerType: options.allowOwnerType === false ? "" : (url.searchParams.get("ownerType") || "").trim(),
     severity: options.allowSeverity === false ? "" : (url.searchParams.get("severity") || "").trim(),
     priorityOnly: parseBooleanQuery(url.searchParams.get("priorityOnly")),
   }
+}
+
+function resolveRegionTotalItems(row, query) {
+  if (query.search || query.severity) return null
+
+  if (VALID_OWNER_TYPES.has(query.ownerType)) {
+    const packageFieldByOwnerType = {
+      central: "central_packages",
+      provinsi: "provincial_packages",
+      kabkota: "local_packages",
+      other: "other_packages",
+    }
+    const priorityFieldByOwnerType = {
+      central: "central_priority_packages",
+      provinsi: "provincial_priority_packages",
+      kabkota: "local_priority_packages",
+      other: "other_priority_packages",
+    }
+    const fieldName = query.priorityOnly ? priorityFieldByOwnerType[query.ownerType] : packageFieldByOwnerType[query.ownerType]
+    return row[fieldName] || 0
+  }
+
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0
+}
+
+function resolveProvinceTotalItems(row, query) {
+  if (query.search || query.severity) return null
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0
+}
+
+function resolveOwnerTotalItems(row, query) {
+  if (query.search || query.severity) return null
+  return query.priorityOnly ? row.total_priority_packages || 0 : row.total_packages || 0
 }
 
 function buildPackagesWhereClause(scopeColumn, scopeKey, query, options = {}) {
@@ -299,12 +344,13 @@ async function first(db, sql, params = []) {
 
 async function queryPackagesPage(db, scopeTable, scopeColumn, scopeKey, normalizedQuery, options = {}) {
   const whereClause = buildPackagesWhereClause(scopeColumn, scopeKey, normalizedQuery, options)
-  const countRow = await first(
-    db,
-    `SELECT COUNT(*) AS total FROM ${scopeTable} INNER JOIN packages ON packages.id = ${scopeTable}.package_id WHERE ${whereClause.sql}`,
-    whereClause.params,
-  )
-  const totalItems = countRow?.total || 0
+  const totalItems = Number.isInteger(options.precomputedTotalItems)
+    ? options.precomputedTotalItems
+    : ((await first(
+        db,
+        `SELECT COUNT(*) AS total FROM ${scopeTable} INNER JOIN packages ON packages.id = ${scopeTable}.package_id WHERE ${whereClause.sql}`,
+        whereClause.params,
+      ))?.total || 0)
   const totalPages = totalItems ? Math.ceil(totalItems / normalizedQuery.pageSize) : 1
   const page = Math.min(normalizedQuery.page, totalPages)
   const offset = (page - 1) * normalizedQuery.pageSize
@@ -350,10 +396,11 @@ async function queryPackagesPage(db, scopeTable, scopeColumn, scopeKey, normaliz
   return { totalItems, page, pageSize: normalizedQuery.pageSize, totalPages, rows: rows.map(mapPackageRow) }
 }
 
-async function queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery) {
+async function queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery, options = {}) {
   const whereClause = buildOwnerPackagesWhereClause(ownerType, ownerName, normalizedQuery)
-  const countRow = await first(db, `SELECT COUNT(*) AS total FROM packages WHERE ${whereClause.sql}`, whereClause.params)
-  const totalItems = countRow?.total || 0
+  const totalItems = Number.isInteger(options.precomputedTotalItems)
+    ? options.precomputedTotalItems
+    : ((await first(db, `SELECT COUNT(*) AS total FROM packages WHERE ${whereClause.sql}`, whereClause.params))?.total || 0)
   const totalPages = totalItems ? Math.ceil(totalItems / normalizedQuery.pageSize) : 1
   const page = Math.min(normalizedQuery.page, totalPages)
   const offset = (page - 1) * normalizedQuery.pageSize
@@ -566,7 +613,9 @@ async function getRegionPackages(db, regionKey, url) {
 
   if (!regionRow) return null
   const normalizedQuery = normalizeScopedPackageQuery(url)
-  const pageResult = await queryPackagesPage(db, "package_regions", "package_regions.region_key", regionKey, normalizedQuery)
+  const pageResult = await queryPackagesPage(db, "package_regions", "package_regions.region_key", regionKey, normalizedQuery, {
+    precomputedTotalItems: resolveRegionTotalItems(regionRow, normalizedQuery),
+  })
   return {
     region: mapRegionRow(regionRow),
     summary: { totalItems: pageResult.totalItems, filteredItems: pageResult.totalItems },
@@ -605,7 +654,10 @@ async function getProvincePackages(db, provinceKey, url) {
 
   if (!provinceRow) return null
   const normalizedQuery = normalizeScopedPackageQuery(url, { allowOwnerType: false })
-  const pageResult = await queryPackagesPage(db, "package_provinces", "package_provinces.province_key", provinceKey, normalizedQuery, { forcedOwnerType: "provinsi" })
+  const pageResult = await queryPackagesPage(db, "package_provinces", "package_provinces.province_key", provinceKey, normalizedQuery, {
+    forcedOwnerType: "provinsi",
+    precomputedTotalItems: resolveProvinceTotalItems(provinceRow, normalizedQuery),
+  })
   return {
     province: mapProvinceRow(provinceRow),
     summary: { totalItems: pageResult.totalItems, filteredItems: pageResult.totalItems },
@@ -643,7 +695,9 @@ async function getOwnerPackages(db, url) {
 
   if (!ownerRow) return null
   const normalizedQuery = normalizeScopedPackageQuery(url, { allowOwnerType: false })
-  const pageResult = await queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery)
+  const pageResult = await queryOwnerPackagesPage(db, ownerType, ownerName, normalizedQuery, {
+    precomputedTotalItems: resolveOwnerTotalItems(ownerRow, normalizedQuery),
+  })
   return {
     owner: mapOwnerRow(ownerRow),
     summary: { totalItems: pageResult.totalItems, filteredItems: pageResult.totalItems },
@@ -737,7 +791,7 @@ export default {
       return new Response("Static assets binding missing", { status: 500 })
     } catch (error) {
       console.error("[nemesis-worker]", error)
-      return errorResponse("Internal server error", 500)
+      return errorResponse(error?.statusCode ? error.message : "Internal server error", error?.statusCode || 500)
     }
   },
 }

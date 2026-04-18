@@ -1452,6 +1452,7 @@ function createIndexes(db) {
     CREATE INDEX idx_packages_priority_order ON packages(is_priority, potential_waste DESC, risk_score DESC);
     CREATE INDEX idx_packages_owner_type ON packages(owner_type);
     CREATE INDEX idx_packages_owner_lookup ON packages(owner_type, owner_name);
+    CREATE INDEX idx_packages_owner_scope_order ON packages(owner_type, owner_name, is_priority DESC, potential_waste DESC, risk_score DESC, COALESCE(budget, 0) DESC, inserted_order ASC);
     CREATE INDEX idx_packages_severity ON packages(severity);
     CREATE INDEX idx_package_regions_region ON package_regions(region_key, package_id);
     CREATE INDEX idx_package_provinces_province ON package_provinces(province_key, package_id);
